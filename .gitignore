@@ -38,6 +38,7 @@ outputs/models/*.pkl
 outputs/models/*.joblib
 outputs/models/*.json
 outputs/models/*.txt
+outputs/models/shap_values.npy
 
 # Logs
 logs/
