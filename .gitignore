@@ -34,7 +34,9 @@ data/processed/*.parquet
 data/external/
 
 # Trained model artefacts
-outputs/models/*.joblib
+outputs/models/xgboost_model.joblib
+outputs/models/lightgbm_model.joblib
+outputs/models/lr_baseline.joblib
 outputs/models/shap_values.npy
 outputs/reports/*.pdf
 

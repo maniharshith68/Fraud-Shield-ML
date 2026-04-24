@@ -165,7 +165,14 @@ st.markdown("""
 
 @st.cache_resource(show_spinner="Loading model…")
 def load_model_and_config():
-    """Load best model config and the XGBoost/LightGBM wrapper."""
+    """
+    Load model wrapper and config.
+
+    Priority order:
+      1. Full model  (xgboost_model.joblib)   — best performance, too large for git
+      2. Surrogate   (surrogate_model.joblib)  — ~3-5 MB, committed to git, Streamlit-friendly
+      3. No model    — show informative warning in Live Predict tab
+    """
     import __main__
     try:
         from src.models.train_models import XGBWrapper, LGBMWrapper
@@ -175,19 +182,43 @@ def load_model_and_config():
         pass
 
     import joblib
+
+    # ── Try full model first ──────────────────────────────────────────────────
     config_path = MODELS_DIR / "best_model_config.json"
-    if not config_path.exists():
-        return None, None
+    if config_path.exists():
+        with open(config_path) as f:
+            config = json.load(f)
+        full_model_path = MODELS_DIR / config["best_model_file"]
+        if full_model_path.exists():
+            wrapper = joblib.load(full_model_path)
+            config["_model_source"] = "full"
+            return wrapper, config
 
-    with open(config_path) as f:
-        config = json.load(f)
+    # ── Fall back to surrogate model ──────────────────────────────────────────
+    surrogate_config_path = MODELS_DIR / "surrogate_config.json"
+    surrogate_model_path  = MODELS_DIR / "surrogate_model.joblib"
 
-    model_path = MODELS_DIR / config["best_model_file"]
-    if not model_path.exists():
+    if surrogate_config_path.exists() and surrogate_model_path.exists():
+        with open(surrogate_config_path) as f:
+            config = json.load(f)
+        # Map surrogate config keys to match full config structure
+        if "feature_cols" not in config:
+            config["feature_cols"] = {"numeric": [], "categorical": []}
+        config["_model_source"]       = "surrogate"
+        config["best_model"]          = "XGBoost (Surrogate)"
+        config["best_model_file"]     = "surrogate_model.joblib"
+        config["hard_block_threshold"] = config.get("hard_block_threshold", 0.90)
+        wrapper = joblib.load(surrogate_model_path)
+        return wrapper, config
+
+    # ── No model available ────────────────────────────────────────────────────
+    if config_path.exists():
+        with open(config_path) as f:
+            config = json.load(f)
+        config["_model_source"] = "none"
         return None, config
 
-    wrapper = joblib.load(model_path)
-    return wrapper, config
+    return None, None
 
 
 @st.cache_data(show_spinner=False)
@@ -257,16 +288,19 @@ def render_sidebar(config):
 
         if config:
             m = config.get("metrics", {})
+            model_source = config.get("_model_source", "full")
+            label = "Deployed Model" if model_source == "surrogate" else "Best Model"
             st.markdown(
-                "<div style='font-family:Syne,sans-serif; font-size:0.7rem;"
-                "color:#93c5fd; letter-spacing:0.1em; text-transform:uppercase;"
-                "margin-bottom:8px;'>Best Model</div>",
+                f"<div style='font-family:Syne,sans-serif; font-size:0.7rem;"
+                f"color:#93c5fd; letter-spacing:0.1em; text-transform:uppercase;"
+                f"margin-bottom:8px;'>{label}</div>",
                 unsafe_allow_html=True,
             )
+            display_name = config.get("best_model", "—")
             st.markdown(
                 f"<div style='font-family:Syne,sans-serif; font-size:1rem;"
                 f"font-weight:700; color:#f8fafc;'>"
-                f"{config.get('best_model','—')}</div>",
+                f"{display_name}</div>",
                 unsafe_allow_html=True,
             )
             st.caption(f"PR-AUC: **{m.get('pr_auc', 0):.4f}**")
@@ -503,27 +537,43 @@ def render_live_predict(wrapper, config, feature_stats):
     )
 
     if wrapper is None:
-        st.warning(
-            "Model not loaded. Ensure `outputs/models/xgboost_model.joblib` "
-            "exists and run `python3 src/models/train_models.py` first.",
-            icon="⚠️",
+        st.error(
+            "**No model available for live prediction.** "
+            "To enable this tab locally, run: "
+            "`python3 src/models/train_models.py` (full model, ~50MB) or "
+            "`python3 src/reporting/train_surrogate_model.py` (surrogate, ~4MB). "
+            "Then commit `outputs/models/surrogate_model.joblib` to enable "
+            "live prediction on Streamlit Cloud.",
+            icon="🚫",
         )
         return
+
+    # ── Surrogate model notice ────────────────────────────────────────────────
+    model_source = config.get("_model_source", "full") if config else "none"
+    if model_source == "surrogate":
+        st.info(
+            "**Running surrogate model** (150-estimator XGBoost, trained on 80K rows). "
+            "PR-AUC ≈ 0.76 vs full model's 0.824. "
+            "Predictions are indicative — the full model runs locally with "
+            "`python3 src/models/train_models.py`.",
+            icon="🔬",
+        )
 
     if not feature_stats:
         st.warning(
-            "Feature statistics not found. Run "
-            "`python3 src/reporting/generate_feature_stats.py` to generate them.",
+            "Feature statistics not found. "
+            "Run `python3 src/reporting/generate_feature_stats.py` to generate them.",
             icon="⚠️",
         )
         return
 
-    threshold    = config.get("f2_threshold", 0.45)
-    hard_block   = config.get("hard_block_threshold", 0.99)
-    num_cols     = config["feature_cols"]["numeric"]
-    cat_cols     = config["feature_cols"]["categorical"]
-    medians      = feature_stats.get("medians", {})
-    modes        = feature_stats.get("modes", {})
+    # Use feature_cols from feature_stats if config doesn't have them (surrogate path)
+    num_cols  = (config.get("feature_cols") or {}).get("numeric") or                 feature_stats.get("numeric_cols", [])
+    cat_cols  = (config.get("feature_cols") or {}).get("categorical") or                 feature_stats.get("cat_cols", [])
+    medians   = feature_stats.get("medians", {})
+    modes     = feature_stats.get("modes", {})
+    threshold  = config.get("f2_threshold", 0.45)
+    hard_block = config.get("hard_block_threshold", 0.90)
 
     st.info(
         f"The model uses 221 features. You control the key interpretable ones below. "
