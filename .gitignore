@@ -34,11 +34,9 @@ data/processed/*.parquet
 data/external/
 
 # Trained model artefacts
-outputs/models/*.pkl
 outputs/models/*.joblib
-outputs/models/*.json
-outputs/models/*.txt
 outputs/models/shap_values.npy
+outputs/reports/*.pdf
 
 # Logs
 logs/
