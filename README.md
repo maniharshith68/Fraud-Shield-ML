@@ -167,4 +167,3 @@ This project was built and developed in collaboration with [Shruti Kumari](https
 - [Harshith Bhattaram](https://github.com/maniharshith68)
 - [Shruti Kumari](https://github.com/shrutisurya108)
 
----
